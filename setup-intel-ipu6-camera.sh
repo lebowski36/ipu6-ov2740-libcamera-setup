@@ -1,55 +1,52 @@
 #!/usr/bin/env bash
-# Intel MIPI / IPU6 Webcam auf Arch/CachyOS — libcamera zuerst, optional AUR+V4L2-Relay
+# Intel IPU6 + OV2740 — libcamera / PipeWire helper for Arch-based systems (pacman).
 #
-# Realistische Erwartung:
-# - Auf aktuellen Kerneln (6.18+, dein CachyOS 7.x) funktioniert die offene Pipeline oft:
-#   Kernel-Treiber + libcamera + pipewire-libcamera. ThinkPad X1 Carbon Gen 11 wird im Arch-Forum
-#   mit Sensor OV2740 und libcamera genannt — Bild kann ohne IPA-Tuning blass/zittrig wirken;
-#   Tuning: https://bbs.archlinux.org/viewtopic.php?id=297262 (Beitrag „X1 Carbon Gen 11 … ov2740.yaml“)
-# - Wenn Browser/Apps nur klassisches V4L2 (/dev/video*) nutzen und libcamera nicht reicht,
-#   hilft der zweite Weg: DKMS + Intel-Blobs + v4l2loopback + v4l2-relayd (AUR, längere Builds).
+# Expectation:
+# - On recent kernels, the open stack often works: kernel + firmware + libcamera +
+#   pipewire-libcamera. Many laptops with OV2740 (e.g. some ThinkPads) benefit from
+#   community IPA tuning in ov2740.yaml.
+# - If apps require classic V4L2 (/dev/video*) only, an optional AUR path exists
+#   (DKMS, relay) — heavy, use only when needed.
 #
-# Nutzung:
-#   bash setup-intel-ipu6-camera.sh libcamera          # empfohlen zuerst (nur offizielle Repos)
-#   bash setup-intel-ipu6-camera.sh libcamera-user     # PipeWire neu starten (ohne sudo)
-#   sudo bash setup-intel-ipu6-camera.sh aur           # Fallback: AUR-Stack + Loopback + Relay
-#   bash setup-intel-ipu6-camera.sh status             # Diagnose
-#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa # IPA platelminto (Original, kein Agc)
-#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-lowlila    # platelminto + strengeres Agc (Highlights drosseln)
-#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-lowlila-v2 # wie lowlila, CCM 92% platelminto — oft weniger Magenta bei Clipping
-#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-daylight  # IPA ohne CCM — weniger Lila/Pink bei Sonne (leichter Grünstich)
-#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-daylight-vivid  # daylight + milde CCM (8% frnkq) — etwas Farbe, weniger Lila als voller CCM
-#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-daylight-cool   # gegen Gelb/Grün: leicht kühler (heuristische CCM), kein Agc
-#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-frnkq      # alternativ. CCM (Forum frnkq): oft weniger Grün, evtl. mehr Lila bei Sonne
-#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-frnkq-agc  # frnkq+Agc+yTarget 0.38 (aktueller Standard)
-#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-frnkq-agc-neutral  # 75/25 frnkq+platelminto — oft etwas weniger Grün
-#   bash setup-intel-ipu6-camera.sh wireplumber-ipu6  # V4L2-Monitor aus, libcamera für Chrome/Meet (ohne sudo)
-#   bash setup-intel-ipu6-camera.sh camera-persist   # Nach jedem Login: PipeWire/WirePlumber kurz neu (IPU6-Race)
-#   bash setup-intel-ipu6-camera.sh backup-ov2740     # Kopie der IPA-Datei nach ~ (Backup)
-#   bash setup-intel-ipu6-camera.sh help
+# Usage:
+#   bash setup-intel-ipu6-camera.sh              # interactive wizard (TTY only)
+#   bash setup-intel-ipu6-camera.sh help           # list non-interactive commands
+#   sudo bash setup-intel-ipu6-camera.sh libcamera
+#   bash setup-intel-ipu6-camera.sh libcamera-user
+#   bash setup-intel-ipu6-camera.sh wireplumber-ipu6
+#   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-lowlila-v2
+#   bash setup-intel-ipu6-camera.sh status
+#
+# References:
+#   https://bbs.archlinux.org/viewtopic.php?id=297262
+#   https://jgrulich.cz/
 
 set -euo pipefail
 
-die() { echo "Fehler: $*" >&2; exit 1; }
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+
+die() { echo "Error: $*" >&2; exit 1; }
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+need_pacman() {
+  have_cmd pacman || die "This script targets Arch-based distributions (pacman not found)."
+}
+
 aur_install() {
-  # paru/yay nicht als root ausführen (Pacman-Regel / AUR-Helfer)
   if [[ "$(id -u)" -eq 0 ]]; then
     local u="${SUDO_USER:-}"
-    [[ -n "$u" && "$u" != root ]] || die "AUR: bitte ausführen: sudo $0 aur   (von deinem normalen User, nicht reines root-Login)."
+    [[ -n "$u" && "$u" != root ]] || die "AUR: run as: sudo $0 aur (from your normal user account, not a root login)."
     if have_cmd paru; then runuser -u "$u" -- paru -S --needed --noconfirm "$@"; return; fi
     if have_cmd yay; then runuser -u "$u" -- yay -S --needed --noconfirm "$@"; return; fi
-    die "Kein paru/yay gefunden. User $u: paru installieren, dann erneut sudo $0 aur"
+    die "No paru/yay found. Install paru as user $u, then run: sudo $0 aur"
   fi
   if have_cmd paru; then paru -S --needed --noconfirm "$@"; return; fi
   if have_cmd yay; then yay -S --needed --noconfirm "$@"; return; fi
-  die "Kein paru/yay gefunden: https://github.com/Morganamilo/paru"
+  die "No paru/yay found: https://github.com/Morganamilo/paru"
 }
 
 kernel_headers_pkg() {
-  # Passende Headers zum installierten Kernel (CachyOS vs. Arch-Standard)
   if pacman -Q linux-cachyos &>/dev/null; then
     echo linux-cachyos-headers
     return
@@ -64,57 +61,215 @@ kernel_headers_pkg() {
       return
     fi
   done
-  die "Konnte kein passendes Kernel-Paket ermitteln (linux / linux-cachyos …). Headers manuell installieren."
+  die "Could not detect an installed kernel meta-package (linux, linux-zen, linux-cachyos, …). Install matching *-headers manually."
 }
 
 cmd_help() {
-  sed -n '1,25p' "$0" | tail -n +2
+  cat <<'EOF'
+Intel IPU6 + OV2740 — libcamera / PipeWire (Arch-based, pacman)
+
+Interactive:
+  bash setup-intel-ipu6-camera.sh
+ Starts the menu wizard on a terminal (TTY). In non-interactive contexts, prints this help.
+
+Non-interactive commands:
+  help, -h, --help          Show this text
+  status, diag             Diagnostics (kernel, PCI, dmesg, packages)
+  libcamera                Install repo packages (requires root)
+  libcamera-user           Restart user PipeWire session (no root)
+  wireplumber-ipu6         Write WirePlumber snippet for libcamera path (no root)
+  camera-persist           User systemd oneshot: restart stack after login (no root)
+  backup-ov2740            Copy /usr/share/.../ov2740.yaml to ~/ov2740-ipa-backup.yaml
+  aur                      Optional AUR relay stack — DKMS, long build (requires root)
+
+OV2740 IPA profiles (writes /usr/share/libcamera/ipa/simple/ov2740.yaml; requires root):
+  ov2740-ipa | ov2740 | ov2740-yaml
+  ov2740-ipa-lowlila | ov2740-lowlila | ov2740-ipa-plus
+  ov2740-ipa-lowlila-v2 | ov2740-lowlila-v2   (common recommendation)
+  ov2740-ipa-daylight | ov2740-daylight
+  ov2740-ipa-daylight-vivid | ov2740-daylight-vivid | daylight-vivid
+  ov2740-ipa-daylight-cool | ov2740-daylight-cool | daylight-cool
+  ov2740-ipa-frnkq | ov2740-frnkq
+  ov2740-ipa-frnkq-agc | ov2740-frnkq-agc
+  ov2740-ipa-frnkq-agc-neutral | ov2740-frnkq-neutral | ov2740-neutral
+
+After changing IPA: restart qcam; optionally run: bash setup-intel-ipu6-camera.sh libcamera-user
+Firefox (Wayland): about:config → media.webrtc.camera.allow-pipewire = true
+EOF
+}
+
+prompt_yn() {
+  # $1 default y|n, $2 prompt text
+  local def="$1"
+  local text="$2"
+  local hint
+  [[ "$def" == y ]] && hint="[Y/n]" || hint="[y/N]"
+  local r
+  read -r -p "$text $hint " r || true
+  r=${r,,}
+  r=${r:0:1}
+  if [[ -z "$r" ]]; then
+    [[ "$def" == y ]] && return 0 || return 1
+  fi
+  [[ "$r" == y ]]
+}
+
+read_one_letter() {
+  local r
+  read -r -p "$1 " r || true
+  printf '%s' "${r,,}"
+}
+
+interactive_wizard() {
+  need_pacman
+  if [[ "$(id -u)" -eq 0 ]]; then
+    die "Run the wizard as your normal user (not root). It will invoke sudo when needed."
+  fi
+
+  cat <<'EOF'
+
+================================================================================
+ Intel IPU6 + OV2740 — libcamera / PipeWire setup wizard
+  Target: Arch-based systems (pacman). Other distros are not automated here.
+================================================================================
+
+EOF
+
+  if prompt_yn y "Run diagnostics now (kernel, PCI, packages)?"; then
+    echo
+    cmd_status
+    echo
+  fi
+
+  if prompt_yn y "Install official repo packages (libcamera, pipewire-libcamera, …)?"; then
+    sudo "$SCRIPT_PATH" libcamera || die "Package install failed."
+    echo
+  fi
+
+  if prompt_yn y "Restart your user PipeWire / WirePlumber session now?"; then
+    "$SCRIPT_PATH" libcamera-user
+    echo
+  fi
+
+  if prompt_yn y "Install WirePlumber snippet (disable V4L2 monitor, enable libcamera path)?"; then
+    "$SCRIPT_PATH" wireplumber-ipu6
+    echo
+  fi
+
+  cat <<'EOF'
+OV2740 IPA profile (writes system ov2740.yaml; affects image color/exposure).
+  s — Skip (keep current system file)
+  a — platelminto CCM, no AGC (less flicker; can clip harshly in bright scenes)
+  b — platelminto + strict AGC / highlight limit
+  c — Like (b), softer CCM (often less magenta on clipped highlights) [recommended default]
+  d — No CCM (washed; can reduce pink in sunlight)
+  e — No AGC + mild color lift
+  f — Cool-tint heuristic CCM, no AGC
+  g — frnkq CCM, no AGC (can be dark after cold start without AGC)
+  h — frnkq + AGC
+  i — frnkq/platelminto blend + AGC
+
+EOF
+  local p  p=$(read_one_letter "Enter letter [s/a/b/c/d/e/f/g/h/i], then Enter: ")
+  p=${p:0:1}
+  case "$p" in
+    s|'') echo "Skipping IPA write." ;;
+    a) sudo "$SCRIPT_PATH" ov2740-ipa ;;
+    b) sudo "$SCRIPT_PATH" ov2740-ipa-lowlila ;;
+    c) sudo "$SCRIPT_PATH" ov2740-ipa-lowlila-v2 ;;
+    d) sudo "$SCRIPT_PATH" ov2740-ipa-daylight ;;
+    e) sudo "$SCRIPT_PATH" ov2740-ipa-daylight-vivid ;;
+    f) sudo "$SCRIPT_PATH" ov2740-ipa-daylight-cool ;;
+    g) sudo "$SCRIPT_PATH" ov2740-ipa-frnkq ;;
+    h) sudo "$SCRIPT_PATH" ov2740-ipa-frnkq-agc ;;
+    i) sudo "$SCRIPT_PATH" ov2740-ipa-frnkq-agc-neutral ;;
+    *) echo "Unknown choice; skipping IPA write." ;;
+  esac
+  echo
+
+  if prompt_yn n "Enable optional login workaround (user systemd restarts PipeWire ~5s after login)?"; then
+    "$SCRIPT_PATH" camera-persist
+    echo
+  fi
+
+  if prompt_yn n "Backup current ov2740.yaml to ~/ov2740-ipa-backup.yaml?"; then
+    "$SCRIPT_PATH" backup-ov2740
+    echo
+  fi
+
+  cat <<'EOF'
+Optional AUR path: DKMS modules, Intel camera binaries, v4l2loopback, v4l2-relayd.
+Only choose this if you need a legacy /dev/video-style device or libcamera is not enough.
+Long build time; proprietary components; not required for most PipeWire/libcamera setups.
+
+EOF
+  if prompt_yn n "Install the AUR relay stack now?"; then
+    sudo "$SCRIPT_PATH" aur
+  else
+    echo "Skipped AUR stack."
+  fi
+
+  cat <<'EOF'
+
+Done. Suggested checks:
+  qcam
+  wpctl status # look for camera / ov2740
+  bash setup-intel-ipu6-camera.sh status
+
+EOF
 }
 
 cmd_status() {
   echo "=== Kernel ==="
   uname -r
   echo
-  echo "=== PCI (IPU / VSC) ==="
-  lspci -nn 2>/dev/null | rg -i 'ipu|imaging|visual|mipi' || lspci -nn | rg -i '8086:.*(0480|462e|a75d|7d19)' || true
+  echo "=== PCI (IPU / imaging) ==="
+  if have_cmd lspci; then
+    lspci -nn 2>/dev/null | grep -Ei 'ipu|imaging|visual|mipi' || lspci -nn 2>/dev/null | grep -Ei '8086:.*(0480|462e|a75d|7d19)' || true
+  else
+    echo "(lspci not found)"
+  fi
   echo
-  echo "=== Video-Geräte ==="
-  ls -la /dev/video* 2>/dev/null || echo "(keine /dev/video*)"
+  echo "=== Video devices ==="
+  ls -la /dev/video* 2>/dev/null || echo "(no /dev/video*)"
   echo
-  echo "=== Dmesg (Auszug) ==="
-  dmesg 2>/dev/null | rg -i 'ipu6|ipu |ovti|ov[0-9]|mipi|int3472|libcamera' | tail -n 30 || true
+  echo "=== dmesg (filtered, last lines) ==="
+  if have_cmd dmesg; then
+    dmesg 2>/dev/null | grep -Ei 'ipu6|ipu |ovti|ov[0-9]|mipi|int3472|libcamera' | tail -n 30 || true
+  else
+    echo "(dmesg not available)"
+  fi
   echo
-  echo "=== Pakete (libcamera) ==="
+  echo "=== Packages (libcamera) ==="
   pacman -Q libcamera libcamera-ipa pipewire-libcamera 2>/dev/null || true
   echo
-  echo "=== Hinweis Browser (Firefox, Wayland) ==="
+  echo "=== Browser note (Firefox, Wayland) ==="
   echo "  about:config → media.webrtc.camera.allow-pipewire = true"
 }
 
 cmd_libcamera() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus libcamera: sudo $0 libcamera"
-  echo "Installiere Repo-Pakete (libcamera + PipeWire-Integration) …"
+  need_pacman
+  [[ "$(id -u)" -eq 0 ]] || die "libcamera: run with sudo."
+  echo "Installing repository packages (libcamera + PipeWire integration) …"
   pacman -S --needed --noconfirm \
     libcamera libcamera-ipa libcamera-tools gst-plugin-libcamera pipewire-libcamera
   echo
-  echo "Fertig (Repo)."
-  echo "Als normaler Benutzer ausführen: $0 libcamera-user"
-  echo "Test:  qcam"
+  echo "Repository install finished."
+  echo "As your user run: bash $SCRIPT_PATH libcamera-user"
+  echo "Test with: qcam"
   echo "Firefox: media.webrtc.camera.allow-pipewire = true"
 }
 
 cmd_libcamera_user() {
-  [[ "$(id -u)" -ne 0 ]] || die "Modus libcamera-user ohne sudo (als dein Login-User)."
+  [[ "$(id -u)" -ne 0 ]] || die "libcamera-user: run as your normal user (no sudo)."
   if have_cmd systemctl; then
     systemctl --user restart wireplumber pipewire pipewire-pulse 2>/dev/null || true
   fi
-  echo "PipeWire (User) neu gestartet (falls vorhanden)."
+  echo "User PipeWire session restarted (if systemd user session is available)."
 }
 
-# IPU6: Raw V4L2 ist oft nutzlos (Bayer); Browser brauchen libcamera über PipeWire.
-# Siehe u. a. https://jgrulich.cz/ — monitor.v4l2 aus, libcamera optional.
 cmd_wireplumber_ipu6() {
-  [[ "$(id -u)" -ne 0 ]] || die "wireplumber-ipu6 ohne sudo ausführen (Konfiguration in ~)."
+  [[ "$(id -u)" -ne 0 ]] || die "wireplumber-ipu6: run as your normal user (no sudo)."
   local d="${XDG_CONFIG_HOME:-$HOME/.config}/wireplumber/wireplumber.conf.d"
   local f="$d/99-ipu6-libcamera.conf"
   mkdir -p "$d"
@@ -126,18 +281,15 @@ wireplumber.profiles = {
   }
 }
 EOF
-  echo "Geschrieben: $f"
+  echo "Wrote: $f"
   if have_cmd systemctl; then
     systemctl --user restart pipewire wireplumber 2>/dev/null || systemctl --user restart wireplumber pipewire 2>/dev/null || true
   fi
-  echo "PipeWire/WirePlumber neu gestartet. Prüfen: wpctl status | rg -i camera"
-  echo "Chrome: meet.google.com — Kamera erlauben; ggf. chrome://settings/content/camera"
+  echo "Restarted PipeWire/WirePlumber (user). Check: wpctl status | grep -i camera"
 }
 
-# Nach Login: kurz warten, dann PipeWire/WirePlumber neu — behebt oft „nach Reboot andere Bildqualität / kein Gerät“.
-# Idee wie im Arch-Forum (platelminto); optional, stört nicht merklich.
 cmd_camera_persist() {
-  [[ "$(id -u)" -ne 0 ]] || die "camera-persist ohne sudo (User-Systemd)."
+  [[ "$(id -u)" -ne 0 ]] || die "camera-persist: run as your normal user (no sudo)."
   local udir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   local unit="$udir/restart-wireplumber-ipu6.service"
   mkdir -p "$udir"
@@ -156,32 +308,31 @@ WantedBy=default.target
 EOF
   systemctl --user daemon-reload
   systemctl --user enable --now restart-wireplumber-ipu6.service
-  echo "Aktiviert: $unit"
-  echo "Beim nächsten Login startet der Dienst einmalig ~5s nach Session-Start und startet Audio/Video-Stack neu."
-  echo "Deaktivieren: systemctl --user disable --now restart-wireplumber-ipu6.service"
+  echo "Enabled: $unit"
+  echo "On each login, ~5s after session start, the audio/video stack restarts once."
+  echo "Disable: systemctl --user disable --now restart-wireplumber-ipu6.service"
 }
 
 cmd_backup_ov2740() {
-  [[ "$(id -u)" -ne 0 ]] || die "backup-ov2740 ohne sudo."
+  [[ "$(id -u)" -ne 0 ]] || die "backup-ov2740: run as your normal user (no sudo)."
   local src=/usr/share/libcamera/ipa/simple/ov2740.yaml
-  local dst="$HOME/ov2740-x1c-backup.yaml"
-  [[ -r "$src" ]] || die "Nicht lesbar: $src (IPA gesetzt?)"
+  local dst="${HOME}/ov2740-ipa-backup.yaml"
+  [[ -r "$src" ]] || die "Cannot read: $src (IPA file missing?)"
   cp -a "$src" "$dst"
-  echo "Kopie: $dst"
-  echo "Wiederherstellen nach Verlust: sudo cp $dst $src && sudo chmod 644 $src"
+  echo "Copied to: $dst"
+  echo "Restore: sudo cp $dst $src && sudo chmod 644 $src"
 }
 
-# Community-IPA für OV2740 (ThinkPad X1 Carbon Gen 11 u.ä.): ohne diese Datei nutzt libcamera
-# uncalibrated.yaml → Grünstich, flackerndes AGC. Quelle: Arch-Forum platelminto et al.
-# https://bbs.archlinux.org/viewtopic.php?id=297262
+# Community IPA for OV2740 — without a tuned file, libcamera may use generic tuning.
+# Source: Arch forum (platelminto et al.) — https://bbs.archlinux.org/viewtopic.php?id=297262
 cmd_ov2740_ipa() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus ov2740-ipa: sudo $0 ov2740-ipa"
+  [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml
   install -d /usr/share/libcamera/ipa/simple
   cat >"$dest" <<'EOF'
 # SPDX-License-Identifier: CC0-1.0
-# OV2740 — platelminto CCM (Arch forum). Kein Agc (weniger Flackern).
-# Autor-Hinweis: bei sehr hellem Licht kann diese CCM „aggressives Pink“ erzeugen — dann ov2740-ipa-daylight nutzen.
+# OV2740 — platelminto CCM (community). No AGC (often less exposure flicker).
+# Very bright scenes may show strong magenta — try daylight preset if needed.
 %YAML 1.1
 ---
 version: 1
@@ -204,20 +355,17 @@ algorithms:
             - 1.60
 EOF
   chmod 644 "$dest"
-  echo "Geschrieben: $dest"
-  echo "qcam neu starten; bei Meet/Chrome PipeWire-Session ggf.: systemctl --user restart wireplumber pipewire"
+  echo "Wrote: $dest"
+  echo "Restart qcam; for browsers restart user PipeWire: bash $SCRIPT_PATH libcamera-user"
 }
 
-# Wie ov2740-ipa (identische platelminto-CCM), aber mit Agc + strenger Highlight-Bremse (niedrigere yTargets).
-# Magenta in Lampe/Specular: oft Sensor-Clipping — nie perfekt wegzutunen; v2 = etwas weichere CCM.
-# libcamera: AgcMeanLuminance / AeConstraintMode (u. a. ConstraintHighlight.upper).
 cmd_ov2740_ipa_lowlila() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus ov2740-ipa-lowlila: sudo $0 ov2740-ipa-lowlila"
+  [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa-lowlila: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml
   install -d /usr/share/libcamera/ipa/simple
   cat >"$dest" <<'EOF'
 # SPDX-License-Identifier: CC0-1.0
-# OV2740 — platelminto CCM + Agc (Highlight hart drosseln). Magenta kommt oft von ausgefressenen Highlights + CCM.
+# OV2740 — platelminto CCM + AGC with strong highlight limiting.
 %YAML 1.1
 ---
 version: 1
@@ -252,20 +400,18 @@ algorithms:
             - 1.60
 EOF
   chmod 644 "$dest"
-  echo "Geschrieben (platelminto + strenges Agc/Highlight): $dest"
-  echo "Original ohne Agc: sudo $0 ov2740-ipa   | noch Lila: sudo $0 ov2740-ipa-lowlila-v2"
-  echo "Feintune: Normal yTarget hoch = heller; Highlight upper yTarget runter = weniger Ausfressen (z. B. 0.48)."
-  echo "qcam neu starten; PipeWire: bash $0 libcamera-user"
+  echo "Wrote (platelminto + strict AGC/highlight): $dest"
+  echo "Tune: higher Normal yTarget = brighter frame; lower Highlight yTarget = less clipping (e.g. 0.48)."
+  echo "Restart qcam; PipeWire: bash $SCRIPT_PATH libcamera-user"
 }
 
-# Wie lowlila (gleiches Agc), aber CCM 92% platelminto + 8% Einheit — weniger Farbübertreibung auf Clipping, näher am Look von ov2740-ipa.
 cmd_ov2740_ipa_lowlila_v2() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus ov2740-ipa-lowlila-v2: sudo $0 ov2740-ipa-lowlila-v2"
+  [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa-lowlila-v2: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml
   install -d /usr/share/libcamera/ipa/simple
   cat >"$dest" <<'EOF'
 # SPDX-License-Identifier: CC0-1.0
-# OV2740 — lowlila-v2: gleiches Agc wie lowlila, CCM leicht entschärft (92% platelminto)
+# OV2740 — Same AGC as lowlila; CCM slightly softened (92% platelminto blend).
 %YAML 1.1
 ---
 version: 1
@@ -300,19 +446,17 @@ algorithms:
             - 1.55
 EOF
   chmod 644 "$dest"
-  echo "Geschrieben (lowlila-v2, weichere CCM): $dest"
-  echo "Zu blass/fade: sudo $0 ov2740-ipa-lowlila"
-  echo "qcam neu starten; PipeWire: bash $0 libcamera-user"
+  echo "Wrote (lowlila-v2): $dest"
+  echo "Restart qcam; PipeWire: bash $SCRIPT_PATH libcamera-user"
 }
 
-# aljinovic / platelminto: ohne Ccm — bei Tageslicht oft weniger Lila als mit CCM; insgesamt etwas „washed out“.
 cmd_ov2740_ipa_daylight() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus ov2740-ipa-daylight: sudo $0 ov2740-ipa-daylight"
+  [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa-daylight: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml
   install -d /usr/share/libcamera/ipa/simple
   cat >"$dest" <<'EOF'
 # SPDX-License-Identifier: CC0-1.0
-# OV2740 — ohne CCM (Arch forum aljinovic / platelminto Edit: lieber blass als Pink bei Helligkeit)
+# OV2740 — No CCM (often less pink in daylight; looks washed).
 %YAML 1.1
 ---
 version: 1
@@ -322,18 +466,17 @@ algorithms:
   - Adjust:
 EOF
   chmod 644 "$dest"
-  echo "Geschrieben (Tageslicht-Preset, ohne CCM): $dest"
-  echo "qcam neu starten; PipeWire: bash $0 libcamera-user"
+  echo "Wrote (daylight, no CCM): $dest"
+  echo "PipeWire: bash $SCRIPT_PATH libcamera-user"
 }
 
-# Wie daylight (kein Agc), aber sanfte Farbanhebung: CCM = 92% Identität + 8% frnkq (weicher als früher 12%).
 cmd_ov2740_ipa_daylight_vivid() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus ov2740-ipa-daylight-vivid: sudo $0 ov2740-ipa-daylight-vivid"
+  [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa-daylight-vivid: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml
   install -d /usr/share/libcamera/ipa/simple
   cat >"$dest" <<'EOF'
 # SPDX-License-Identifier: CC0-1.0
-# OV2740 — „daylight vivid“: kein Agc; leichte CCM (8% frnkq, 92% Einheit)
+# OV2740 — No AGC; mild CCM (8% frnkq blend).
 %YAML 1.1
 ---
 version: 1
@@ -356,19 +499,17 @@ algorithms:
             - 1.21
 EOF
   chmod 644 "$dest"
-  echo "Geschrieben (daylight-vivid, 8%): $dest"
-  echo "Zu gelb/grün: sudo $0 ov2740-ipa-daylight-cool   | Zu blass: sudo $0 ov2740-ipa-daylight"
-  echo "PipeWire: bash $0 libcamera-user"
+  echo "Wrote (daylight-vivid): $dest"
+  echo "PipeWire: bash $SCRIPT_PATH libcamera-user"
 }
 
-# Gegen Gelb- und Grünstich: kleine „kühlere“ CCM (Community-Heuristik), kein Agc — bei Lila wieder daylight.
 cmd_ov2740_ipa_daylight_cool() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus ov2740-ipa-daylight-cool: sudo $0 ov2740-ipa-daylight-cool"
+  [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa-daylight-cool: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml
   install -d /usr/share/libcamera/ipa/simple
   cat >"$dest" <<'EOF'
 # SPDX-License-Identifier: CC0-1.0
-# OV2740 — „daylight cool“: kein Agc; milde CCM gegen warm/gelb und etwas Grün (heuristisch)
+# OV2740 — Cool heuristic CCM, no AGC.
 %YAML 1.1
 ---
 version: 1
@@ -391,19 +532,17 @@ algorithms:
             - 1.08
 EOF
   chmod 644 "$dest"
-  echo "Geschrieben (daylight-cool): $dest"
-  echo "Zu kühl/Lila: sudo $0 ov2740-ipa-daylight   | Mehr Farbe: sudo $0 ov2740-ipa-daylight-vivid"
-  echo "PipeWire: bash $0 libcamera-user"
+  echo "Wrote (daylight-cool): $dest"
+  echo "PipeWire: bash $SCRIPT_PATH libcamera-user"
 }
 
-# frnkq (X1 Nano G3, Arch forum): heller, weniger krasser Grünstich als „daylight“, Autor: evtl. leichter Grünstich verbleibend.
 cmd_ov2740_ipa_frnkq() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus ov2740-ipa-frnkq: sudo $0 ov2740-ipa-frnkq"
+  [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa-frnkq: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml
   install -d /usr/share/libcamera/ipa/simple
   cat >"$dest" <<'EOF'
 # SPDX-License-Identifier: CC0-1.0
-# OV2740 — CCM frnkq (Arch forum). Kein Agc.
+# OV2740 — frnkq CCM (community). No AGC.
 %YAML 1.1
 ---
 version: 1
@@ -426,21 +565,18 @@ algorithms:
             - 3.60
 EOF
   chmod 644 "$dest"
-  echo "Geschrieben (frnkq-CCM): $dest"
-  echo "Hinweis: Ohne Agc kann die Kamera nach Neustart fast schwarz bleiben — dann: sudo $0 ov2740-ipa-frnkq-agc"
-  echo "qcam testen; bei Lila in Sonne wieder: sudo $0 ov2740-ipa-daylight"
-  echo "PipeWire: bash $0 libcamera-user"
+  echo "Wrote (frnkq): $dest"
+  echo "Without AGC the image can stay very dark after startup — then use ov2740-ipa-frnkq-agc."
+  echo "PipeWire: bash $SCRIPT_PATH libcamera-user"
 }
 
-# frnkq + Agc: Helligkeit ähnlicher „wie früher im gleichen Raum“; Agc kann bei sehr hellem Bild flackern (dann ohne Agc: frnkq).
-# yTarget niedriger → weniger Überbelichtung (libcamera-Doku: ConstraintNormal.lower.yTarget, typ. ~0.5).
 cmd_ov2740_ipa_frnkq_agc() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus ov2740-ipa-frnkq-agc: sudo $0 ov2740-ipa-frnkq-agc"
+  [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa-frnkq-agc: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml
   install -d /usr/share/libcamera/ipa/simple
   cat >"$dest" <<'EOF'
 # SPDX-License-Identifier: CC0-1.0
-# OV2740 — frnkq CCM + Agc (getunte Belichtung: yTarget 0.38 gegen Überbelichtung)
+# OV2740 — frnkq CCM + AGC (yTarget 0.38).
 %YAML 1.1
 ---
 version: 1
@@ -470,19 +606,18 @@ algorithms:
             - 3.60
 EOF
   chmod 644 "$dest"
-  echo "Geschrieben (frnkq + Agc, yTarget gedimmt): $dest"
-  echo "qcam neu starten. Zu dunkel: yTarget in der Datei auf 0.42 erhöhen; zu hell: auf 0.34 senken."
-  echo "Bei Flackern: sudo $0 ov2740-ipa-frnkq"
+  echo "Wrote (frnkq + AGC): $dest"
+  echo "If too dark: raise yTarget toward 0.42; if too bright: lower toward 0.34."
+  echo "PipeWire: bash $SCRIPT_PATH libcamera-user"
 }
 
-# Gleiche Belichtung wie frnkq-agc, aber CCM gemischt (75 % frnkq + 25 % platelminto) — weniger Grün, ggf. leicht rötlicher.
 cmd_ov2740_ipa_frnkq_agc_neutral() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus ov2740-ipa-frnkq-agc-neutral: sudo $0 ov2740-ipa-frnkq-agc-neutral"
+  [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa-frnkq-agc-neutral: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml
   install -d /usr/share/libcamera/ipa/simple
   cat >"$dest" <<'EOF'
 # SPDX-License-Identifier: CC0-1.0
-# OV2740 — frnkq+platelminto CCM (75/25) + Agc yTarget 0.38 — Kompromiss weniger Grün
+# OV2740 — 75% frnkq / 25% platelminto CCM + AGC yTarget 0.38.
 %YAML 1.1
 ---
 version: 1
@@ -512,20 +647,19 @@ algorithms:
             - 3.10
 EOF
   chmod 644 "$dest"
-  echo "Geschrieben (frnkq-agc + neutraler CCM-Mix): $dest"
-  echo "qcam testen. Zu warm/Lila: sudo $0 ov2740-ipa-frnkq-agc"
-  echo "PipeWire: bash $0 libcamera-user"
+  echo "Wrote (frnkq-agc neutral blend): $dest"
+  echo "PipeWire: bash $SCRIPT_PATH libcamera-user"
 }
 
 cmd_aur() {
-  [[ "$(id -u)" -eq 0 ]] || die "Modus aur: sudo $0 aur"
-  echo "Installiere Build-Abhängigkeiten …"
+  need_pacman
+  [[ "$(id -u)" -eq 0 ]] || die "aur: run with sudo."
+  echo "Installing build dependencies …"
   local hdr
   hdr="$(kernel_headers_pkg)"
   pacman -S --needed --noconfirm base-devel dkms "$hdr"
 
-  echo "AUR-Pakete bauen/installieren (dauert) …"
-  # Raptor Lake / „IPU6 EP“: HAL-Variante ipu6ep; Binaries + DKMS + GStreamer-Quelle + Relay-Pipeline
+  echo "Building/installing AUR packages (slow) …"
   aur_install \
     intel-ipu6-dkms-git \
     intel-ipu6-camera-bin \
@@ -534,29 +668,38 @@ cmd_aur() {
     v4l2loopback-dkms \
     v4l2-relayd
 
-  echo "DKMS-Module neu bauen …"
+  echo "Rebuilding DKMS modules …"
   dkms autoinstall 2>/dev/null || true
 
-  echo "v4l2loopback-Modprobe-Konfiguration …"
+  echo "v4l2loopback modprobe config …"
   install -d /etc/modprobe.d
   cat >/etc/modprobe.d/ipu6-v4l2loopback.conf <<'EOF'
-# Intel IPU6 → v4l2-relayd; card_label erscheint in Apps als Kamera-Name
+# Intel IPU6 → v4l2-relayd
 options v4l2loopback card_label="Intel IPU6 Webcam" exclusive_caps=1
 EOF
   modprobe v4l2loopback 2>/dev/null || true
 
-  echo "v4l2-relayd Dienst …"
+  echo "v4l2-relayd service …"
   systemctl enable --now v4l2-relayd@intel-ipu.service 2>/dev/null \
     || systemctl enable --now v4l2-relayd.service 2>/dev/null \
-    || echo "Hinweis: v4l2-relayd-Unit nicht gestartet — nach Neustart prüfen: systemctl status 'v4l2-relayd*'"
+    || echo "Note: could not start v4l2-relayd unit — check after reboot: systemctl status 'v4l2-relayd*'"
 
   echo
-  echo "AUR-Weg installiert. Neustart wird oft benötigt, damit ipu6/psys/loopback sauber laden."
-  echo "Danach prüfen:  ls -l /dev/video*   und in Chrome Meet die Kamera wählen."
+  echo "AUR stack installed. Reboot is often required for clean module load."
+  echo "Then check: ls -l /dev/video*"
 }
 
 main() {
-  local sub="${1:-help}"
+  if [[ $# -eq 0 ]]; then
+    if [[ -t 0 && -t 1 ]]; then
+      interactive_wizard
+    else
+      cmd_help
+    fi
+    exit 0
+  fi
+
+  local sub="$1"
   case "$sub" in
     help|-h|--help) cmd_help ;;
     status|diag) cmd_status ;;
@@ -575,7 +718,8 @@ main() {
     camera-persist|persist) cmd_camera_persist ;;
     backup-ov2740|backup-ipa) cmd_backup_ov2740 ;;
     aur|fallback|relay) cmd_aur ;;
-    *) die "Unbekannter Befehl: $sub — siehe: $0 help" ;;
+    interactive|wizard|menu) interactive_wizard ;;
+    *) die "Unknown command: $sub — see: $SCRIPT_PATH help" ;;
   esac
 }
 
