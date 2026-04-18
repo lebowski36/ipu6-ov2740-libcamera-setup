@@ -17,9 +17,9 @@
 #   sudo bash setup-intel-ipu6-camera.sh ov2740-ipa-lowlila-v2
 #   bash setup-intel-ipu6-camera.sh status
 #
-# References:
-#   https://bbs.archlinux.org/viewtopic.php?id=297262
-#   https://jgrulich.cz/
+# References & credits (full attribution in README):
+#   https://bbs.archlinux.org/viewtopic.php?id=297262  (community IPA / ov2740.yaml)
+#   https://jgrulich.cz/  (PipeWire + libcamera)
 
 set -euo pipefail
 
@@ -324,7 +324,8 @@ cmd_backup_ov2740() {
 }
 
 # Community IPA for OV2740 — without a tuned file, libcamera may use generic tuning.
-# Source: Arch forum (platelminto et al.) — https://bbs.archlinux.org/viewtopic.php?id=297262
+# Arch Linux Forums (platelminto, aljinovic, frnkq, et al. — see README Credits):
+#   https://bbs.archlinux.org/viewtopic.php?id=297262
 cmd_ov2740_ipa() {
   [[ "$(id -u)" -eq 0 ]] || die "ov2740-ipa: run with sudo."
   local dest=/usr/share/libcamera/ipa/simple/ov2740.yaml

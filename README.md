@@ -1,8 +1,8 @@
-# Intel IPU6 + OV2740 — libcamera / PipeWire setup
+# Intel IPU6 webcam (OV2740) on Linux — libcamera, PipeWire, Arch
 
-Helper for **Arch-based** distributions (**pacman**) on laptops with **Intel IPU6** and **OV2740** (common on some ThinkPads and similar). It installs **libcamera** + **pipewire-libcamera**, optionally applies a **WirePlumber** snippet, and can write community **IPA** tuning to `ov2740.yaml`.
+Fixes and tuning for **Intel IPU6** laptops with the **OV2740** sensor (often **ThinkPad X1 Carbon Gen 11** and similar) on **Arch Linux**, **CachyOS**, **Manjaro**, and other **pacman**-based distros. The built-in camera is **not a simple USB webcam**: there may be **no `/dev/video0`**, and apps need **libcamera** and **PipeWire** wired correctly.
 
-**Default stack:** open source (kernel + libcamera + PipeWire). An optional **AUR** path (DKMS, relay) exists only for legacy `/dev/video*` workflows.
+If your **camera does not work**, shows a **black** or **very dark** image, **green** or **purple** skin tones, **magenta** highlights, a **frozen** still frame, **lag**, or **only updates once** in **Zoom**, **Teams**, **Google Meet**, or **Firefox** on **Wayland**, this repo automates the usual fixes: packages, **WirePlumber** settings, optional **IPA** profiles in `ov2740.yaml`, and an optional login **race** workaround.
 
 ## Interactive wizard (recommended)
 
@@ -13,8 +13,6 @@ bash setup-intel-ipu6-camera.sh
 ```
 
 On a **non-interactive** terminal (no TTY), running with no arguments prints help instead.
-
-You can also force the menu with:
 
 ```bash
 bash setup-intel-ipu6-camera.sh wizard
@@ -35,20 +33,19 @@ bash setup-intel-ipu6-camera.sh status
 
 **Firefox (Wayland):** `about:config` → `media.webrtc.camera.allow-pipewire` = `true`
 
+## Credits & sources
+
+This project **bundles and automates** steps documented by the community. Please cite them if you fork or write about this:
+
+- **Arch Linux Forums** — [thread on X1 Carbon Gen 11, OV2740, `ov2740.yaml`, libcamera](https://bbs.archlinux.org/viewtopic.php?id=297262). IPA presets in the script trace back to community posts there, including contributions attributed in that thread to **platelminto** (CCM / tuning baseline), **aljinovic** (edits such as daylight / no-CCM ideas), and **frnkq** (alternative CCM matrix used in several presets). The thread is the canonical discussion; thank the posters there if their YAML helped you.
+- **Jan Grulich** — [PipeWire and libcamera integration](https://jgrulich.cz/) (background on why **V4L2** monitoring and **libcamera** matter for this stack).
+
+Embedded YAML fragments in the script are marked **SPDX-License-Identifier: CC0-1.0** in-file where applicable. This repository’s script and docs are offered as-is; add a top-level `LICENSE` if you want a formal project license.
+
 ## Privacy / portability
 
-The script and this README **do not** embed hostnames, serial numbers, or user-specific paths except:
+No hostnames or serial numbers are embedded. Paths used are standard: `$HOME`, `~/.config`, `/usr/share/libcamera/ipa/simple/ov2740.yaml`, and optional `~/ov2740-ipa-backup.yaml`.
 
-- Standard locations: `$HOME`, `~/.config`, `/usr/share/libcamera/...`
-- Optional backup file: `~/ov2740-ipa-backup.yaml`
+## Repository visibility
 
-Clone or publish from your own account; replace any remote URL with yours.
-
-## References
-
-- [Arch forum — OV2740 / libcamera](https://bbs.archlinux.org/viewtopic.php?id=297262)
-- [PipeWire + libcamera (Jan Grulich)](https://jgrulich.cz/)
-
-## License
-
-YAML fragments in the script are marked **CC0-1.0** in-file. Add a top-level `LICENSE` if you want a formal project license.
+This project is intended to stay **public** so others can find it when searching for **Intel IPU6 Linux camera**, **OV2740**, **libcamera**, **PipeWire webcam**, etc.
